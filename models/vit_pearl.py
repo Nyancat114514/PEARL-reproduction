@@ -186,7 +186,6 @@ class Attention_LoRA(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
         self.attn_gradients = None
         self.attention_map = None
-        self.rank = r
 
         self.lora_A_k = nn.ModuleList()
         self.lora_B_k = nn.ModuleList()
@@ -284,31 +283,43 @@ class Attention_LoRA(nn.Module):
     def get_attention_map(self):
         return self.attention_map
     
-    def forward(self, x, task, register_hook=False, get_feat=False,get_cur_feat=False):
+    def forward(self, x, task_id): # Added B, N, C based on context
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # insert lora
-        if task > -0.5:
-            weight_k = torch.stack([torch.mm(self.lora_B_k[t].weight, self.lora_A_k[t].weight) for t in range(task+1)], dim=0).sum(dim=0)
-            weight_v = torch.stack([torch.mm(self.lora_B_v[t].weight, self.lora_A_v[t].weight) for t in range(task+1)], dim=0).sum(dim=0)
-            k = k + F.linear(x, weight_k).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-            v = v + F.linear(x, weight_v).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # Apply LoRA for Key
+        if task_id > -0.5: # task is current task index
+            # delta_k_sum_of_weights should be (dim, dim) like a weight matrix.
+
+            accumulated_delta_Wk = torch.zeros((self.dim, self.dim), device=x.device, dtype=x.dtype)
+
+            # for t_idx in range(task + 1):
+            for t_idx in range(task_id, task_id + 1):   # only current lora parameters make contribution
+                if t_idx < len(self.lora_A_k) and self.lora_A_k[t_idx] is not None and \
+                t_idx < len(self.lora_B_k) and self.lora_B_k[t_idx] is not None:
+
+                    lora_A_k_t = self.lora_A_k[t_idx]
+                    lora_B_k_t = self.lora_B_k[t_idx]
+                    # PEARL's LoRA is W_new = W_old + B @ A
+                    # InfLoRA applies it as: k_new = k_orig + F.linear(x, B@A)
+                    # This implies B@A is the delta_W
+                    accumulated_delta_Wk = accumulated_delta_Wk + (lora_B_k_t.weight @ lora_A_k_t.weight)
+
+            if not torch.all(accumulated_delta_Wk == 0): # If any LoRA was actually added
+                k_increment_features = F.linear(x, accumulated_delta_Wk) # Output: (B, N, C)
+                k_increment_reshaped = k_increment_features.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+                k = k + k_increment_reshaped
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-                
-        if register_hook:
-            self.save_attention_map(attn)
-            attn.register_hook(self.save_attn_gradients)        
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
+        x_out = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x_out = self.proj(x_out)
+        x_out = self.proj_drop(x_out)
+        return x_out
+    
     def get_current_task_lora_weights(self, task_idx, target_is_value=False):
         """ Returns B@A for the specified task_idx and target (K or V) """
         if not target_is_value:

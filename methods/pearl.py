@@ -33,22 +33,15 @@ class PEARL(BaseLearner):
                 module.init_param()
 
         self.args = args
+
+        self.E1_lr = args.get("E1_lr", 5e-3)
+        self.E1_epoch = args.get("E1_epoch", 25)
+        self.E2_lr = args.get("E2_lr", 5e-4)
+        self.E2_epoch = args.get("E2_epoch", 25)
+
         self.optim = args["optim"]
-        self.EPSILON = args["EPSILON"]
-        self.init_epoch = args["init_epoch"]
-        self.init_lr = args["init_lr"]
-        self.init_lr_decay = args["init_lr_decay"]
-        self.init_weight_decay = args["init_weight_decay"]
-        self.epochs = args["epochs"]
-        self.lrate = args["lrate"]
-        self.lrate_decay = args["lrate_decay"]
         self.batch_size = args["batch_size"]
-        self.weight_decay = args["weight_decay"]
         self.num_workers = args["num_workers"]
-        self.lamb = args["lamb"]
-        self.lame = args["lame"]
-        self.total_sessions = args["total_sessions"]
-        self.dataset = args["dataset"]
 
         self.topk = 1  # origin is 5
         self.class_num = self._network.class_num
