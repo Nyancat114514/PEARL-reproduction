@@ -260,7 +260,7 @@ class PEARL(BaseLearner):
         trainable_params_E2 = []
         # Unfreeze current task's LoRA_k parameters
         for block in (self._network.module.blocks if isinstance(self._network, nn.DataParallel) else self._network.blocks):
-            if isinstance(block.attn, Attention_LoRA_PEARL):
+            if isinstance(block.attn, Attention_LoRA):
                 attn_module = block.attn
                 if self._cur_task < len(attn_module.lora_A_k) and attn_module.lora_A_k[self._cur_task] is not None:
                     for param in attn_module.lora_A_k[self._cur_task].parameters():
@@ -331,19 +331,5 @@ class PEARL(BaseLearner):
             y_true.append(targets.cpu().numpy())
 
         return np.concatenate(y_pred), np.concatenate(y_pred_with_task), np.concatenate(y_true), torch.cat(y_pred_task), torch.cat(y_true_task)  # [N, topk]
-
-    def _compute_accuracy_domain(self, model, loader):
-        model.eval()
-        correct, total = 0, 0
-        for i, (_, inputs, targets) in enumerate(loader):
-            inputs = inputs.to(self._device)
-            with torch.no_grad():
-                outputs = model(inputs)['logits']
-
-            predicts = torch.max(outputs, dim=1)[1]
-            correct += ((predicts % self.class_num).cpu() == (targets % self.class_num)).sum()
-            total += len(targets)
-
-        return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
 
     
