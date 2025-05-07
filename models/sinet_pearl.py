@@ -18,7 +18,7 @@ class ViT_lora_co(VisionTransformer):
             embed_layer=embed_layer, norm_layer=norm_layer, act_layer=act_layer, block_fn=block_fn, n_tasks=n_tasks, rank=rank)
 
 
-    def forward(self, x, task_id, register_blk=-1, get_feat=False, get_cur_feat=False):
+    def forward(self, x, task_id):
         x = self.patch_embed(x)
         x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
 
@@ -27,7 +27,7 @@ class ViT_lora_co(VisionTransformer):
 
         prompt_loss = torch.zeros((1,), requires_grad=True).to(x.device)
         for i, blk in enumerate(self.blocks):
-            x = blk(x, task_id, register_blk==i, get_feat=get_feat, get_cur_feat=get_cur_feat)
+            x = blk(x, task_id)
 
         x = self.norm(x)
         
@@ -69,17 +69,10 @@ class SiNet(nn.Module):
         # print(self.image_encoder)
         # exit()
 
-        self.class_num = 1
-        self.class_num = args["init_cls"]
-        self.classifier_pool = nn.ModuleList([
-            nn.Linear(args["embd_dim"], self.class_num, bias=True)
-            for i in range(args["num_tasks"])
-        ])
+        self.class_num = 0
 
-        self.classifier_pool_backup = nn.ModuleList([
-            nn.Linear(args["embd_dim"], self.class_num, bias=True)
-            for i in range(args["total_sessions"])
-        ])
+        # Initialize the classifier pool
+        self.classifier_pool = nn.ModuleList()
 
         # self.prompt_pool = CodaPrompt(args["embd_dim"], args["total_sessions"], args["prompt_param"])
 
@@ -98,14 +91,15 @@ class SiNet(nn.Module):
         # image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         return image_features
 
-    def forward(self, image):
+    def forward(self, image, task_id):
 
         logits = []
-        image_features, prompt_loss = self.image_encoder(image, task_id=self.numtask-1, get_feat=get_feat, get_cur_feat=get_cur_feat)
+        image_features, prompt_loss = self.image_encoder(image, task_id)
         image_features = image_features[:,0,:]
         image_features = image_features.view(image_features.size(0),-1)
-        for prompts in [self.classifier_pool[self.numtask-1]]:
-            logits.append(prompts(image_features))
+
+        classifier = self.classifier_pool[task_id]
+        logits = classifier(image_features)
 
         return {
             'logits': torch.cat(logits, dim=1),
@@ -113,45 +107,70 @@ class SiNet(nn.Module):
             'prompt_loss': prompt_loss
         }
     
-    def update_task(self):
+    def update_task(self, _cur_class_num):
         self.numtask += 1
+        self.class_num += _cur_class_num
 
-    def interface(self, image, task_id = None):
-        image_features, _ = self.image_encoder(image, task_id=self.numtask-1 if task_id is None else task_id)
+    def add_classifier(self, num_cls):
+        self.classifier_pool.append(nn.Linear(self.feature_dim, num_cls, bias=True))
 
-        image_features = image_features[:,0,:]
-        image_features = image_features.view(image_features.size(0),-1)
+    def interface(self, image):
+        """
+        Class-IL inference: Gets logits from all learned tasks and concatenates them.
+        Each task uses the shared backbone + its specific LoRA parameters.
+        """
+        self.image_encoder.eval() # Ensure encoder is in eval mode
+        all_logits = []
+        
+        # self.numtask represents the number of tasks learned (e.g., if tasks 0, 1 are learned, self.numtask = 2)
+        # Iterate from task_idx 0 to self.numtask - 1
+        for task_idx in range(self.numtask):
+            # Get features specific to this task_idx by activating its LoRAs in the image_encoder
+            # The image_encoder's forward method should handle applying the correct LoRA based on task_id
+            task_specific_features, _ = self.image_encoder(image, task_id=task_idx)
+            
+            # Assuming CLS token is at index 0
+            task_specific_features = task_specific_features[:, 0, :] 
+            task_specific_features = task_specific_features.view(task_specific_features.size(0), -1)
 
-        logits = []
-        for prompt in self.classifier_pool[:self.numtask]:
-            logits.append(prompt(image_features))
+            # Apply the classifier for this specific task
+            # Ensure self.classifier_pool[task_idx] is the trained classifier for task_idx
+            # and its output dimension matches the number of classes in task_idx.
+            if task_idx < len(self.classifier_pool) and self.classifier_pool[task_idx] is not None:
+                logits_for_task = self.classifier_pool[task_idx](task_specific_features)
+                all_logits.append(logits_for_task)
+            else:
+                # This case should ideally not be reached if classifiers are managed correctly
+                # Or, if a task has no classes (e.g. a dummy task 0 before real tasks start)
+                # For robust handling, you might want to log a warning or ensure self.numtask aligns with available classifiers
+                pass
 
-        logits = torch.cat(logits,1)
-        return logits
-    
-    def interface1(self, image, task_ids):
-        logits = []
-        for index in range(len(task_ids)):
-            image_features, _ = self.image_encoder(image[index:index+1], task_id=task_ids[index].item())
-            image_features = image_features[:,0,:]
-            image_features = image_features.view(image_features.size(0),-1)
+        if not all_logits:
+            # Handle case where no logits were generated (e.g., before any task is learned)
+            # Returning a zero tensor or raising an error might be appropriate depending on desired behavior.
+            # For now, let's assume at least one task is learned.
+            # This part depends on how you handle the very first state (no tasks learned).
+            # If num_tasks can be 0, you need to decide what to return.
+            # Example: return torch.empty(image.size(0), 0).to(image.device)
+            # For now, let's assume self.numtask >= 1 for this to be called in eval
+            if image.size(0) > 0 :
+                 # Fallback, though ideally, this should not happen if `self.numtask` is managed well.
+                 # The number of classes for fallback is uncertain. Let's assume 0 output classes.
+                 num_output_classes = 0 # Or some default if expected for an edge case
+                 if self.numtask > 0 and len(self.classifier_pool) > 0 and self.classifier_pool[0] is not None:
+                    num_output_classes = self.classifier_pool[0].out_features
+                 else: # A very rough fallback if no classifier info is available
+                    num_output_classes = self.args.get("init_cls", 1) if hasattr(self, 'args') else 1
 
-            logits.append(self.classifier_pool_backup[task_ids[index].item()](image_features))
 
-        logits = torch.cat(logits,0)
-        return logits
+                 return torch.zeros(image.size(0), num_output_classes * self.numtask if self.numtask > 0 else num_output_classes).to(image.device)
+            else:
+                 return torch.empty(0,0).to(image.device)
 
-    def interface2(self, image_features):
 
-        logits = []
-        for prompt in self.classifier_pool[:self.numtask]:
-            logits.append(prompt(image_features))
-
-        logits = torch.cat(logits,1)
-        return logits
-
-    def classifier_backup(self, task_id):
-        self.classifier_pool_backup[task_id].load_state_dict(self.classifier_pool[task_id].state_dict())
+        # Concatenate logits from all task-specific classifiers along dimension 1
+        concatenated_logits = torch.cat(all_logits, dim=1)
+        return concatenated_logits
 
     def classifier_recall(self):
         self.classifier_pool.load_state_dict(self.old_state_dict)

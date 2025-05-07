@@ -38,7 +38,11 @@ class PEARL(BaseLearner):
         self.E1_epoch = args.get("E1_epoch", 25)
         self.E2_lr = args.get("E2_lr", 5e-4)
         self.E2_epoch = args.get("E2_epoch", 25)
+        self.pearl_min_rank = args.get("pearl_min_rank", 1)
+        self.pearl_max_rank_ratio = args.get("pearl_max_rank_ratio", 0.5) # Ratio of embed_dim
         self.default_pearl_threshold_mean = args.get("default_pearl_threshold_mean", 0.1)
+        self.default_pearl_rank = args.get("default_pearl_rank", 4)
+
 
         self.optim = args["optim"]
         self.batch_size = args["batch_size"]
@@ -47,6 +51,9 @@ class PEARL(BaseLearner):
         self.topk = 1  # origin is 5
         self.class_num = self._network.class_num
         self.debug = False
+        self._cur_task = -1
+        self._total_classes = 0
+        self._known_classes = 0
 
 
     def after_task(self):
@@ -104,9 +111,9 @@ class PEARL(BaseLearner):
                 # Model's forward might need current task_idx if it influences LoRA selection or head selection.
                 # For E1, temp_model has only one head. For E2, _network.forward needs task_idx.
                 if "Stage 3" in description or "Reference task" in description : # self._network
-                     outputs = model(inputs, task_id=task_idx_for_loss) # Pass task_id to SiNet_PEARL
+                    outputs = model(inputs, task_id=task_idx_for_loss) # Pass task_id to SiNet_PEARL
                 else: # temp_model_for_E1
-                     outputs = model(inputs) # Assumes temp_model_for_E1's forward doesn't need task_id
+                    outputs = model(inputs, task_id=0) # Assumes temp_model_for_E1's forward doesn't need task_id
 
                 logits = outputs['logits']
                 loss = F.cross_entropy(logits, relative_targets)
@@ -142,7 +149,7 @@ class PEARL(BaseLearner):
         
         # Load weights from the original backbone of self._network
         # This ensures we start from W^r for each layer
-        main_net_state_dict = self._network.module.state_dict() if isinstance(self._network, nn.DataParallel) else self._network.state_dict()
+        main_net_state_dict = self._network.state_dict()
         
         temp_model_state_dict = temp_model.state_dict()
         
@@ -164,8 +171,8 @@ class PEARL(BaseLearner):
         # SiNet_PEARL's update_fc handles adding a *new* classifier for the *current* task.
         # For temp_model, it should effectively only have *one* classifier for the *current new* classes.
         # So, we might need a specific classifier for it.
-        temp_model.classifier_pool = nn.ModuleList([nn.Linear(temp_model.embed_dim, self._network.class_num)])
-        temp_model.numtask = 1 # So it uses the first (and only) classifier in its pool
+        temp_model.classifier_pool = nn.ModuleList([nn.Linear(temp_model.embed_dim, self._total_classes - self._known_classes)])
+        temp_model.numtask = 0 # So it uses the first (and only) classifier in its pool
 
         return temp_model
 
@@ -259,7 +266,7 @@ class PEARL(BaseLearner):
         
         trainable_params_E2 = []
         # Unfreeze current task's LoRA_k parameters
-        for block in (self._network.module.blocks if isinstance(self._network, nn.DataParallel) else self._network.blocks):
+        for block in self._network.image_encoder.blocks:
             if isinstance(block.attn, Attention_LoRA):
                 attn_module = block.attn
                 if self._cur_task < len(attn_module.lora_A_k) and attn_module.lora_A_k[self._cur_task] is not None:
@@ -272,12 +279,14 @@ class PEARL(BaseLearner):
         
         # Unfreeze current task's classifier head
         # SiNet_PEARL's update_fc adds a new classifier for self._cur_task at index self._cur_task
-        current_classifier = (self._network.module.classifier_pool[self._cur_task] if 
-                              isinstance(self._network, nn.DataParallel) else 
-                              self._network.classifier_pool[self._cur_task])
-        for param in current_classifier.parameters():
-            param.requires_grad_(True)
-            trainable_params_E2.append(param)
+        self._network.add_classifier(self._total_classes - self._known_classes)
+        current_classifier = self._network.classifier_pool[self._cur_task]
+        try:
+            for param in current_classifier.parameters():
+                param.requires_grad_(True)
+                trainable_params_E2.append(param)
+        except:
+            logging.warning(f"PEARL Stage 3 (Task {self._cur_task}): No lora parameters found.")
 
         if not trainable_params_E2:
             logging.warning(f"PEARL Stage 3 (Task {self._cur_task}): No parameters found to train for E2 stage. Skipping.")
@@ -310,10 +319,7 @@ class PEARL(BaseLearner):
             with torch.no_grad():
                 y_true_task.append((targets//self.class_num).cpu())
 
-                if isinstance(self._network, nn.DataParallel):
-                    outputs = self._network.module.interface(inputs)
-                else:
-                    outputs = self._network.interface(inputs)
+                outputs = self._network.interface(inputs)
 
             predicts = torch.topk(outputs, k=self.topk, dim=1, largest=True, sorted=True)[1].view(-1)  # [bs, topk]
             y_pred_task.append((predicts//self.class_num).cpu())
