@@ -52,6 +52,8 @@ def _train(args):
     print_args(args)
     data_manager = DataManager(args['dataset'], args['shuffle'], args['seed'], args['init_cls'], args['increment'], args)
     args['class_order'] = data_manager._class_order
+    args['num_tasks'] = data_manager.nb_tasks
+
     model = factory.get_model(args['model_name'], args)
 
     cnn_curve, cnn_curve_with_task, nme_curve, cnn_curve_task = {'top1': []}, {'top1': []}, {'top1': []}, {'top1': []}

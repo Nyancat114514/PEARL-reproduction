@@ -201,16 +201,9 @@ class Attention_LoRA(nn.Module):
         Re-initializes LoRA A and B matrices for a task with standard initializations
         (Kaiming for A, Zeros for B). This is PEARL's crucial re-initialization step.
         """
-        if not target_is_value:
-            if self.lora_A_k[task_idx] is not None and self.lora_B_k[task_idx] is not None:
-                nn.init.kaiming_uniform_(self.lora_A_k[task_idx].weight, a=math.sqrt(5))
-                nn.init.zeros_(self.lora_B_k[task_idx].weight)
-        else:
-            # Similar for _v
-            # if self.lora_A_v[task_idx] is not None and self.lora_B_v[task_idx] is not None:
-            #     nn.init.kaiming_uniform_(self.lora_A_v[task_idx].weight, a=math.sqrt(5))
-            #     nn.init.zeros_(self.lora_B_v[task_idx].weight)
-            pass
+        if self.lora_A_k[task_idx] is not None and self.lora_B_k[task_idx] is not None:
+            nn.init.kaiming_uniform_(self.lora_A_k[task_idx].weight, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B_k[task_idx].weight)
 
     def add_lora_for_task(self, task_idx, rank=64, rank_v_new=None):
         """
@@ -223,53 +216,11 @@ class Attention_LoRA(nn.Module):
             self.lora_A_k.append(None)
             self.lora_B_k.append(None)
             self.dynamic_ranks_k.append(0) # Store the rank
-        # (Same for _v if adapting Value)
-        # while len(self.lora_A_v) <= task_idx:
-        #     self.lora_A_v.append(None)
-        #     self.lora_B_v.append(None)
-        #     self.dynamic_ranks_v.append(0)
 
         # Create and store LoRA layers for Key
         self.lora_A_k[task_idx] = nn.Linear(self.dim, rank, bias=False).to(device)
         self.lora_B_k[task_idx] = nn.Linear(rank, self.dim, bias=False).to(device)
         self.dynamic_ranks[task_idx] = rank
-
-        # If adapting Value:
-        # if rank_v_new is not None:
-        #     self.lora_A_v[task_idx] = nn.Linear(self.dim, rank_v_new, bias=False).to(device)
-        #     self.lora_B_v[task_idx] = nn.Linear(rank_v_new, self.dim, bias=False).to(device)
-        #     self.dynamic_ranks_v[task_idx] = rank_v_new
-
-    def initialize_lora_with_svd(self, task_idx, U, S, V_T, target_is_value=False):
-        """
-        Initializes the LoRA A and B matrices for a given task using SVD components
-        as per PEARL paper Eq. 5.
-        Assumes U, S, V_T are from SVD of the *key-specific* task vector W_c_key = W_key_task - W_key_ref
-        or *value-specific* task vector if target_is_value is True.
-        W_c_key (or W_c_value) has shape (self.dim, self.dim) if it's modifying a full projection.
-        """
-        if not target_is_value:
-            if self.lora_A_k[task_idx] is None:
-                print(f"Warning: LoRA_A_k for task {task_idx} is not yet created. Skipping SVD init.")
-                return
-            rank_k = self.lora_A_k[task_idx].out_features # This is k_l
-
-            # A_k_weight (rank_k x dim)
-            # V_T is (dim x dim) from SVD, so V_T[:rank_k, :] gives top rank_k rows (each of length dim)
-            self.lora_A_k[task_idx].weight.data = torch.diag_embed(S[:rank_k]) @ V_T[:rank_k, :]
-
-            # B_k_weight (dim x rank_k)
-            # U is (dim x dim) from SVD, so U[:, :rank_k] gives top rank_k columns (each of length dim)
-            self.lora_B_k[task_idx].weight.data = U[:, :rank_k] @ torch.diag_embed(S[:rank_k])
-        else:
-            # Similar logic for lora_A_v and lora_B_v if adapting Value
-            # if self.lora_A_v[task_idx] is None:
-            #     print(f"Warning: LoRA_A_v for task {task_idx} is not yet created. Skipping SVD init.")
-            #     return
-            # rank_v = self.lora_A_v[task_idx].out_features
-            # self.lora_A_v[task_idx].weight.data = torch.diag_embed(S[:rank_v]) @ V_T[:rank_v, :]
-            # self.lora_B_v[task_idx].weight.data = U[:, :rank_v] @ torch.diag_embed(S[:rank_v])
-            pass
 
     def save_attn_gradients(self, attn_gradients):
         self.attn_gradients = attn_gradients
