@@ -1,0 +1,30 @@
+{
+    "prefix": "reproduce",
+    "dataset": "cifar100",
+    "data_path": "data/",
+    "memory_size": 0,
+    "memory_per_class": 0,
+    "fixed_memory": true,
+    "shuffle": false,
+    "init_cls": 10,
+    "increment": 10,
+    "model_name": "pearl",
+    "net_type": "sip",
+    "embd_dim" : 768,
+    "num_heads": 12,
+    "seed": [3596],
+    "optim" : "adam",
+    "batch_size": 64,
+    "weight_decay": 0.0,
+    "E1_lr": 5e-3,
+    "E1_epoch": 25,
+    "E2_lr": 5e-4,
+    "E2_epoch": 25,
+    
+    "num_workers": 16,
+
+    "pearl_min_rank": 1,
+    "pearl_max_rank_ratio": 0.5,
+    "default_pearl_threshold_mean": 0.1,
+    "default_pearl_rank": 4
+}

@@ -293,10 +293,10 @@ class Block(nn.Module):
 
     def __init__(
             self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0., init_values=None,
-            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, n_tasks=10, r=64):
+            drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, n_tasks=10):
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.attn = Attention_LoRA(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop, n_tasks=n_tasks, r=r)
+        self.attn = Attention_LoRA(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop, n_tasks=n_tasks)
         self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -308,7 +308,7 @@ class Block(nn.Module):
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
     def forward(self, x, task, register_hook=False, get_feat=False, get_cur_feat=False):
-        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x), task, register_hook=register_hook, get_feat=get_feat, get_cur_feat=get_cur_feat)))
+        x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x), task)))
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
@@ -412,7 +412,7 @@ class VisionTransformer(nn.Module):
         self.blocks = nn.Sequential(*[
             block_fn(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, init_values=init_values,
-                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,n_tasks=n_tasks,r=rank)
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer,n_tasks=n_tasks)
             for i in range(depth)])
         use_fc_norm = self.global_pool == 'avg'
         self.norm = norm_layer(embed_dim) if not use_fc_norm else nn.Identity()

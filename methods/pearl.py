@@ -28,10 +28,6 @@ class PEARL(BaseLearner):
         else:
             raise ValueError('Unknown net: {}.'.format(args["net_type"]))
         
-        for module in self._network.modules():
-            if isinstance(module, Attention_LoRA):
-                module.init_param()
-
         self.args = args
 
         self.E1_lr = args.get("E1_lr", 5e-3)
@@ -171,7 +167,7 @@ class PEARL(BaseLearner):
         # SiNet_PEARL's update_fc handles adding a *new* classifier for the *current* task.
         # For temp_model, it should effectively only have *one* classifier for the *current new* classes.
         # So, we might need a specific classifier for it.
-        temp_model.classifier_pool = nn.ModuleList([nn.Linear(temp_model.embed_dim, self._total_classes - self._known_classes)])
+        temp_model.classifier_pool = nn.ModuleList([nn.Linear(temp_model.feature_dim, self._total_classes - self._known_classes)])
         temp_model.numtask = 0 # So it uses the first (and only) classifier in its pool
 
         return temp_model
