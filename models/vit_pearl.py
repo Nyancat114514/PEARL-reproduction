@@ -191,7 +191,7 @@ class Attention_LoRA(nn.Module):
         self.lora_B_k = nn.ModuleList()
         # self.lora_A_v = nn.ModuleList([nn.Linear(dim, r, bias=False) for _ in range(n_tasks)])
         # self.lora_B_v = nn.ModuleList([nn.Linear(r, dim, bias=False) for _ in range(n_tasks)])
-        self.dynamic_ranks = [] 
+        self.dynamic_ranks_k = [] 
 
         self.max_tasks = n_tasks
 
@@ -220,7 +220,7 @@ class Attention_LoRA(nn.Module):
         # Create and store LoRA layers for Key
         self.lora_A_k[task_idx] = nn.Linear(self.dim, rank, bias=False).to(device)
         self.lora_B_k[task_idx] = nn.Linear(rank, self.dim, bias=False).to(device)
-        self.dynamic_ranks[task_idx] = rank
+        self.dynamic_ranks_k[task_idx] = rank
 
     def save_attn_gradients(self, attn_gradients):
         self.attn_gradients = attn_gradients

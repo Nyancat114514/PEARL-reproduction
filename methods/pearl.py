@@ -45,7 +45,27 @@ class PEARL(BaseLearner):
         self.num_workers = args["num_workers"]
 
         self.topk = 1  # origin is 5
-        self.class_num = self._network.class_num
+
+        if "increment" in self.args and self.args["increment"] > 0:
+            # Use 'increment' as it typically defines classes per new task segment.
+            self.class_num = self.args["increment"]
+            logging.info(f"PEARL.class_num initialized to args['increment']: {self.class_num}")
+            if "init_cls" in self.args and self.args["init_cls"] != self.args["increment"] and self._cur_task == -1 : # Log warning if relevant for the very first task setup
+                logging.warning(
+                    f"PEARL.class_num set based on 'increment' ({self.args['increment']}). "
+                    f"Initial task uses 'init_cls' ({self.args['init_cls']}). "
+                    f"Ensure this is handled if _eval_cnn expects a single value for classes_per_task across all tasks."
+                )
+        elif "init_cls" in self.args: # Fallback if 'increment' isn't suitable (e.g. 0 or not defined)
+            self.class_num = self.args["init_cls"]
+            logging.info(f"PEARL.class_num initialized to args['init_cls']: {self.class_num}")
+        else:
+            # This value is critical. Raise an error if it cannot be determined.
+            raise ValueError(
+                "Cannot determine 'classes_per_task' (from args['increment'] or args['init_cls']) "
+                "for PEARL.class_num initialization."
+            )
+        
         self.debug = False
         self._cur_task = -1
         self._total_classes = 0
@@ -60,7 +80,7 @@ class PEARL(BaseLearner):
         # Freeze LoRA parameters of the task just trained
         if self._cur_task >= 0:
             logging.info(f"Freezing LoRA parameters for task {self._cur_task}")
-            for block in self._network.blocks:
+            for block in self._network.image_encoder.blocks:
                 if isinstance(block.attn, Attention_LoRA):
                     if self._cur_task < len(block.attn.lora_A_k) and block.attn.lora_A_k[self._cur_task] is not None:
                         for param in block.attn.lora_A_k[self._cur_task].parameters():
@@ -112,6 +132,7 @@ class PEARL(BaseLearner):
                     outputs = model(inputs, task_id=0) # Assumes temp_model_for_E1's forward doesn't need task_id
 
                 logits = outputs['logits']
+
                 loss = F.cross_entropy(logits, relative_targets)
                 loss.backward()
                 optimizer.step()
@@ -200,11 +221,11 @@ class PEARL(BaseLearner):
             
             # Iterate through Attention_LoRA modules in self._network
             # Assuming self._network.blocks gives access to ViT blocks
-            for block_idx, main_block in enumerate(self._network.module.blocks if isinstance(self._network, nn.DataParallel) else self._network.blocks):
+            for block_idx, main_block in enumerate(self._network.image_encoder.blocks):
                 if isinstance(main_block.attn, Attention_LoRA):
                     attn_module_main = main_block.attn
                     # Corresponding attention module from the E1-fine-tuned temporary model
-                    attn_module_temp_E1 = temp_model_E1.blocks[block_idx].attn 
+                    attn_module_temp_E1 = temp_model_E1.image_encoder.blocks[block_idx].attn 
 
                     dim = attn_module_main.dim
                     
@@ -277,6 +298,8 @@ class PEARL(BaseLearner):
         # SiNet_PEARL's update_fc adds a new classifier for self._cur_task at index self._cur_task
         self._network.add_classifier(self._total_classes - self._known_classes)
         current_classifier = self._network.classifier_pool[self._cur_task]
+        current_classifier.to(self._device) 
+
         try:
             for param in current_classifier.parameters():
                 param.requires_grad_(True)

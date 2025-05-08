@@ -102,7 +102,7 @@ class SiNet(nn.Module):
         logits = classifier(image_features)
 
         return {
-            'logits': torch.cat(logits, dim=1),
+            'logits': logits,
             'features': image_features,
             'prompt_loss': prompt_loss
         }
