@@ -65,7 +65,7 @@ def _train(args):
         time_end = time.time()
         logging.info('Time:{}'.format(time_end - time_start))
         time_start = time.time()
-        cnn_accy, cnn_accy_with_task, nme_accy, cnn_accy_task = model.eval_task()
+        cnn_accy, nme_accy = model.eval_task()
         time_end = time.time()
         logging.info('Time:{}'.format(time_end - time_start))
         # raise Exception
@@ -73,11 +73,7 @@ def _train(args):
 
         logging.info('CNN: {}'.format(cnn_accy['grouped']))
         cnn_curve['top1'].append(cnn_accy['top1'])
-        cnn_curve_with_task['top1'].append(cnn_accy_with_task['top1'])
-        cnn_curve_task['top1'].append(cnn_accy_task)
         logging.info('CNN top1 curve: {}'.format(cnn_curve['top1']))
-        logging.info('CNN top1 with task curve: {}'.format(cnn_curve_with_task['top1']))
-        logging.info('CNN top1 task curve: {}'.format(cnn_curve_task['top1']))
 
         # if task >= 3: break
 

@@ -45,26 +45,6 @@ class PEARL(BaseLearner):
         self.num_workers = args["num_workers"]
 
         self.topk = 1  # origin is 5
-
-        if "increment" in self.args and self.args["increment"] > 0:
-            # Use 'increment' as it typically defines classes per new task segment.
-            self.class_num = self.args["increment"]
-            logging.info(f"PEARL.class_num initialized to args['increment']: {self.class_num}")
-            if "init_cls" in self.args and self.args["init_cls"] != self.args["increment"] and self._cur_task == -1 : # Log warning if relevant for the very first task setup
-                logging.warning(
-                    f"PEARL.class_num set based on 'increment' ({self.args['increment']}). "
-                    f"Initial task uses 'init_cls' ({self.args['init_cls']}). "
-                    f"Ensure this is handled if _eval_cnn expects a single value for classes_per_task across all tasks."
-                )
-        elif "init_cls" in self.args: # Fallback if 'increment' isn't suitable (e.g. 0 or not defined)
-            self.class_num = self.args["init_cls"]
-            logging.info(f"PEARL.class_num initialized to args['init_cls']: {self.class_num}")
-        else:
-            # This value is critical. Raise an error if it cannot be determined.
-            raise ValueError(
-                "Cannot determine 'classes_per_task' (from args['increment'] or args['init_cls']) "
-                "for PEARL.class_num initialization."
-            )
         
         self.debug = False
         self._cur_task = -1
@@ -320,8 +300,10 @@ class PEARL(BaseLearner):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
-        print(len(y_pred), len(y_true))
-        grouped = accuracy(y_pred, y_true, self._known_classes, self.class_num)
+        
+        print("len(y_pred):", len(y_pred), "len(y_true):", len(y_true))
+
+        grouped = accuracy(y_pred, y_true, self._known_classes, self._total_classes - self._known_classes)
         ret['grouped'] = grouped
         ret['top1'] = grouped['total']
         return ret
@@ -329,32 +311,20 @@ class PEARL(BaseLearner):
     def _eval_cnn(self, loader):
         self._network.eval()
         y_pred, y_true = [], []
-        y_pred_with_task = []
-        y_pred_task, y_true_task = [], []
         for _, (_, inputs, targets) in enumerate(loader):
             inputs = inputs.to(self._device)
             targets = targets.to(self._device)
 
             with torch.no_grad():
-                y_true_task.append((targets//self.class_num).cpu())
 
                 outputs = self._network.interface(inputs)
 
             predicts = torch.topk(outputs, k=self.topk, dim=1, largest=True, sorted=True)[1].view(-1)  # [bs, topk]
-            y_pred_task.append((predicts//self.class_num).cpu())
-
-            outputs_with_task = torch.zeros_like(outputs)[:,:self.class_num]
-            for idx, i in enumerate(targets//self.class_num):
-                en, be = self.class_num*i, self.class_num*(i+1)
-                outputs_with_task[idx] = outputs[idx, en:be]
-            predicts_with_task = outputs_with_task.argmax(dim=1)
-            predicts_with_task = predicts_with_task + (targets//self.class_num)*self.class_num
 
             # print(predicts.shape)
             y_pred.append(predicts.cpu().numpy())
-            y_pred_with_task.append(predicts_with_task.cpu().numpy())
             y_true.append(targets.cpu().numpy())
 
-        return np.concatenate(y_pred), np.concatenate(y_pred_with_task), np.concatenate(y_true), torch.cat(y_pred_task), torch.cat(y_true_task)  # [N, topk]
+        return np.concatenate(y_pred), np.concatenate(y_true) # [N, topk]
 
     
