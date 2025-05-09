@@ -5,6 +5,7 @@ import logging
 import copy
 import time
 import torch
+import numpy as np
 from utils import factory
 from utils.data_manager import DataManager
 from utils.toolkit import count_parameters
@@ -74,6 +75,7 @@ def _train(args):
         logging.info('CNN: {}'.format(cnn_accy['grouped']))
         cnn_curve['top1'].append(cnn_accy['top1'])
         logging.info('CNN top1 curve: {}'.format(cnn_curve['top1']))
+        logging.info('average acc: {}'.format(np.mean(cnn_curve['top1'])))
 
         # if task >= 3: break
 

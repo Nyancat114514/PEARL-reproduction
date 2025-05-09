@@ -1,0 +1,1 @@
+python main.py --device 3 --config configs/mimg10_pearl.json 

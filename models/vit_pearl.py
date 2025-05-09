@@ -244,21 +244,22 @@ class Attention_LoRA(nn.Module):
             # delta_k_sum_of_weights should be (dim, dim) like a weight matrix.
 
             accumulated_delta_Wk = torch.zeros((self.dim, self.dim), device=x.device, dtype=x.dtype)
+            rank_k = 0
 
-            # for t_idx in range(task + 1):
-            for t_idx in range(task_id, task_id + 1):   # only current lora parameters make contribution
-                if t_idx < len(self.lora_A_k) and self.lora_A_k[t_idx] is not None and \
-                t_idx < len(self.lora_B_k) and self.lora_B_k[t_idx] is not None:
+            if task_id < len(self.lora_A_k) and self.lora_A_k[task_id] is not None and \
+            task_id < len(self.lora_B_k) and self.lora_B_k[task_id] is not None:
 
-                    lora_A_k_t = self.lora_A_k[t_idx]
-                    lora_B_k_t = self.lora_B_k[t_idx]
-                    # PEARL's LoRA is W_new = W_old + B @ A
-                    # InfLoRA applies it as: k_new = k_orig + F.linear(x, B@A)
-                    # This implies B@A is the delta_W
-                    accumulated_delta_Wk = accumulated_delta_Wk + (lora_B_k_t.weight @ lora_A_k_t.weight)
+                lora_A_k_t = self.lora_A_k[task_id]
+                lora_B_k_t = self.lora_B_k[task_id]
+                rank_k = self.dynamic_ranks_k[task_id]
+                # PEARL's LoRA is W_new = W_old + B @ A
+                # InfLoRA applies it as: k_new = k_orig + F.linear(x, B@A)
+                # This implies B@A is the delta_W
+                accumulated_delta_Wk = lora_B_k_t.weight @ lora_A_k_t.weight
 
             if not torch.all(accumulated_delta_Wk == 0): # If any LoRA was actually added
-                k_increment_features = F.linear(x, accumulated_delta_Wk) # Output: (B, N, C)
+                alpha = rank_k * 2
+                k_increment_features = F.linear(x, accumulated_delta_Wk) * alpha # Output: (B, N, C)
                 k_increment_reshaped = k_increment_features.reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
                 k = k + k_increment_reshaped
 
