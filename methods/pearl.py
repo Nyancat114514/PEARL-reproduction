@@ -119,6 +119,7 @@ class PEARL(BaseLearner):
 
                 losses += loss.item()
                 _, preds = torch.max(logits, dim=1)
+
                 correct += preds.eq(relative_targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
                 
@@ -143,33 +144,11 @@ class PEARL(BaseLearner):
         """
         # Create a new SiNet_PEARL instance, which initializes VisionTransformer without LoRAs active yet
         temp_model = SiNet(self.args)
-        
-        # Load weights from the original backbone of self._network
-        # This ensures we start from W^r for each layer
-        main_net_state_dict = self._network.state_dict()
-        
-        temp_model_state_dict = temp_model.state_dict()
-        
-        # Copy only non-LoRA and non-classifier_pool weights
-        for k_main, v_main in main_net_state_dict.items():
-            if not ("lora_" in k_main or "classifier_pool" in k_main):
-                    if k_main in temp_model_state_dict:
-                        if temp_model_state_dict[k_main].shape == v_main.shape:
-                            temp_model_state_dict[k_main].copy_(v_main)
-                        else:
-                            logging.warning(f"Shape mismatch for {k_main} in _create_temp_model_for_E1. Skipping.")
-                    # else: it's a key from main network not in the base SiNet_PEARL structure (e.g. full head if not pooled)
 
-        temp_model.load_state_dict(temp_model_state_dict, strict=False)
+        temp_model.add_classifier(self._total_classes - self._known_classes)
+        temp_model.update_task(self._total_classes - self._known_classes)
 
-        # The temp_model already has a new classifier for one task (self.class_num classes)
-        # from its __init__ and initial update_fc.
-        # Ensure it has the correct number of output classes for the current new task.
-        # SiNet_PEARL's update_fc handles adding a *new* classifier for the *current* task.
-        # For temp_model, it should effectively only have *one* classifier for the *current new* classes.
-        # So, we might need a specific classifier for it.
-        temp_model.classifier_pool = nn.ModuleList([nn.Linear(temp_model.feature_dim, self._total_classes - self._known_classes)])
-        temp_model.numtask = 0 # So it uses the first (and only) classifier in its pool
+        print("temp_model.classifier_pool[0].shape:", temp_model.classifier_pool[0])
 
         return temp_model
 
@@ -185,6 +164,29 @@ class PEARL(BaseLearner):
         # Stage 1: Fine-tune a temporary copy of the reference network for E1 epochs
         logging.info(f"Task {self._cur_task} Stage 1: Fine-tuning temporary reference model.")
         temp_model_E1 = self._create_temp_model_for_E1().to(self._device)
+
+        # <<< START CODE SNIPPET TO ENSURE TRAINABILITY AND VERIFY >>>
+        # Explicitly set all parameters of temp_model_E1 to be trainable
+        for name, param in temp_model_E1.named_parameters():
+            param.requires_grad_(True)
+
+        logging.info(f"Task {self._cur_task} Stage 1: Verifying temp_model_E1 parameter trainability:")
+        all_trainable = True
+        trainable_param_count = 0
+        total_param_count = 0
+        for name, param in temp_model_E1.named_parameters():
+            total_param_count += param.numel()
+            if param.requires_grad:
+                trainable_param_count += param.numel()
+            else:
+                logging.warning(f"  Parameter {name} in temp_model_E1 is NOT trainable after explicit setting!")
+                all_trainable = False
+        if all_trainable:
+            logging.info(f"  All {trainable_param_count}/{total_param_count} parameters in temp_model_E1 are set to trainable.")
+        else:
+            logging.error(f"  Only {trainable_param_count}/{total_param_count} parameters in temp_model_E1 are trainable. Check creation logic.")
+
+
         
         # All parameters of temp_model_E1 are trainable for this stage
         optimizer_E1 = optim.Adam(temp_model_E1.parameters(), lr=self.E1_lr)
@@ -192,6 +194,8 @@ class PEARL(BaseLearner):
         
         self._train_model_generic(temp_model_E1, train_loader, optimizer_E1, scheduler_E1, 
                                   self.E1_epoch, f"Task {self._cur_task} Stage 1", task_idx_for_loss=0) # temp_model uses its 0-th head
+
+        print("temp_model_E1.classifier_pool[0].weight.grad:", temp_model_E1.classifier_pool[0].weight.grad)
 
         # Stage 2: Compute Task Vectors, Determine Rank, Initialize LoRA in self._network
         logging.info(f"Task {self._cur_task} Stage 2: Computing task vectors and initializing LoRA.")

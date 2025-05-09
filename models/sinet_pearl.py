@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import copy
+import logging
 
 from models.vit_pearl import VisionTransformer, PatchEmbed, Block, resolve_pretrained_cfg, build_model_with_cfg, checkpoint_filter_fn
 from models.zoo import CodaPrompt
@@ -122,9 +123,12 @@ class SiNet(nn.Module):
         self.image_encoder.eval() # Ensure encoder is in eval mode
         all_logits = []
         
-        # self.numtask represents the number of tasks learned (e.g., if tasks 0, 1 are learned, self.numtask = 2)
-        # Iterate from task_idx 0 to self.numtask - 1
-        for task_idx in range(self.numtask):
+        # CORRECTED LOOP: Iterate over the number of classifiers actually present.
+        # self.numtask in your current logic seems to be off by one for this purpose.
+        # len(self.classifier_pool) correctly reflects how many tasks have had classifiers added.
+        num_learned_tasks = len(self.classifier_pool)
+
+        for task_idx in range(num_learned_tasks): # Iterate from 0 to num_learned_tasks - 1
             # Get features specific to this task_idx by activating its LoRAs in the image_encoder
             # The image_encoder's forward method should handle applying the correct LoRA based on task_id
             task_specific_features, _ = self.image_encoder(image, task_id=task_idx)
@@ -136,34 +140,46 @@ class SiNet(nn.Module):
             # Apply the classifier for this specific task
             # Ensure self.classifier_pool[task_idx] is the trained classifier for task_idx
             # and its output dimension matches the number of classes in task_idx.
-            if task_idx < len(self.classifier_pool) and self.classifier_pool[task_idx] is not None:
+            if task_idx < len(self.classifier_pool) and self.classifier_pool[task_idx] is not None: # This check is still good
                 logits_for_task = self.classifier_pool[task_idx](task_specific_features)
                 all_logits.append(logits_for_task)
             else:
                 # This case should ideally not be reached if classifiers are managed correctly
-                # Or, if a task has no classes (e.g. a dummy task 0 before real tasks start)
-                # For robust handling, you might want to log a warning or ensure self.numtask aligns with available classifiers
+                logging.warning(f"SiNet.interface: Classifier for task_idx {task_idx} is missing or None.")
+                # Decide how to handle missing classifiers if it's a possible valid state.
+                # For now, we just skip, which means fewer logits than expected if this happens.
+                # A more robust solution might involve adding zero logits for the expected number of classes
+                # for that task, but this indicates a deeper problem if hit.
                 pass
 
         if not all_logits:
-            # Handle case where no logits were generated (e.g., before any task is learned)
-            # Returning a zero tensor or raising an error might be appropriate depending on desired behavior.
-            # For now, let's assume at least one task is learned.
-            # This part depends on how you handle the very first state (no tasks learned).
-            # If num_tasks can be 0, you need to decide what to return.
-            # Example: return torch.empty(image.size(0), 0).to(image.device)
-            # For now, let's assume self.numtask >= 1 for this to be called in eval
+            # This fallback is now less likely to be hit if num_learned_tasks > 0.
+            # It will primarily be hit if len(self.classifier_pool) is 0 (i.e., before the first task is trained).
+            logging.warning("SiNet.interface: No logits generated, all_logits is empty. num_learned_tasks = {}".format(num_learned_tasks))
             if image.size(0) > 0 :
-                 # Fallback, though ideally, this should not happen if `self.numtask` is managed well.
-                 # The number of classes for fallback is uncertain. Let's assume 0 output classes.
-                 num_output_classes = 0 # Or some default if expected for an edge case
-                 if self.numtask > 0 and len(self.classifier_pool) > 0 and self.classifier_pool[0] is not None:
-                    num_output_classes = self.classifier_pool[0].out_features
-                 else: # A very rough fallback if no classifier info is available
-                    num_output_classes = self.args.get("init_cls", 1) if hasattr(self, 'args') else 1
+                 # Fallback for when no tasks are learned yet or no classifiers are available.
+                 # The number of output classes in this truly initial state is ambiguous.
+                 # Returning zeros for a predefined initial number of classes or self._total_classes (if available and meaningful)
+                 # If self._total_classes is 0 or not yet reflective of any classes, this needs careful thought.
+                 # For safety, let's consider what `_total_classes` would be.
+                 # If this is called before any training, pearl_agent._total_classes could be 0 or initial_cls.
+                 # A robust fallback might be to return empty tensor or raise error if an eval is attempted with no tasks.
+                 # However, if pearl_agent._total_classes is setup by data_manager for the first task group already:
+                 # init_total_classes = self.args.get("init_cls", 1) # A guess, this might need to come from pearl_agent or args
+                 # return torch.zeros(image.size(0), init_total_classes).to(image.device)
+                 # For now, keeping previous logic but aware it's tricky:
+                 num_fallback_classes = 0
+                 if hasattr(self, 'args') and self.args.get("init_cls"): # Attempt to use init_cls from args
+                     num_fallback_classes = self.args["init_cls"]
+                 elif num_learned_tasks > 0 and len(self.classifier_pool) > 0 and self.classifier_pool[0] is not None: # Should not be hit if all_logits is empty and num_learned_tasks > 0
+                    num_fallback_classes = self.classifier_pool[0].out_features * num_learned_tasks
+                 else: # Absolute fallback
+                    num_fallback_classes = self.args.get("init_cls", 1) if hasattr(self, 'args') else 1
 
 
-                 return torch.zeros(image.size(0), num_output_classes * self.numtask if self.numtask > 0 else num_output_classes).to(image.device)
+                 logging.warning(f"SiNet.interface: Fallback returning zeros for {num_fallback_classes} classes.")
+                 return torch.zeros(image.size(0), num_fallback_classes).to(image.device)
+
             else:
                  return torch.empty(0,0).to(image.device)
 
@@ -171,9 +187,6 @@ class SiNet(nn.Module):
         # Concatenate logits from all task-specific classifiers along dimension 1
         concatenated_logits = torch.cat(all_logits, dim=1)
         return concatenated_logits
-
-    def classifier_recall(self):
-        self.classifier_pool.load_state_dict(self.old_state_dict)
 
     def copy(self):
         return copy.deepcopy(self)
